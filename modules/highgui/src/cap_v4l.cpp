@@ -161,6 +161,10 @@ Added v4l2 support for getting capture property CV_CAP_PROP_POS_MSEC.
 Returns the millisecond timestamp of the last frame grabbed or 0 if no frames have been grabbed
 Used to successfully synchonize 2 Logitech C310 USB webcams to within 16 ms of one another
 
+<12th patch: May 1, 2014, Asanka Wickramasinghe asanka424@gmail.com>
+Added v4l2 support for getting and setting exposure, focal length, and zoom. Also enabling
+and disabling auto exposure and focus. Tested with Logitech C920. There might be a bug in v4l2 when
+getting exposure absolute value when in auto mode.
 
 make & enjoy!
 
@@ -242,8 +246,8 @@ make & enjoy!
 #endif
 
 /* Defaults - If your board can do better, set it here.  Set for the most common type inputs. */
-#define DEFAULT_V4L_WIDTH  640
-#define DEFAULT_V4L_HEIGHT 480
+#define DEFAULT_V4L_WIDTH  1280
+#define DEFAULT_V4L_HEIGHT 720
 
 #define CHANNEL_NUMBER 1
 #define MAX_CAMERAS 8
@@ -325,6 +329,8 @@ typedef struct CvCaptureCAM_V4L
    struct v4l2_control control;
    enum v4l2_buf_type type;
    struct v4l2_queryctrl queryctrl;
+   struct v4l2_querymenu querymenu;
+   struct v4l2_streamparm stream;
 
    struct timeval timestamp;
 
@@ -335,6 +341,10 @@ typedef struct CvCaptureCAM_V4L
    int v4l2_hue, v4l2_hue_min, v4l2_hue_max;
    int v4l2_gain, v4l2_gain_min, v4l2_gain_max;
    int v4l2_exposure, v4l2_exposure_min, v4l2_exposure_max;
+   int v4l2_focus, v4l2_focus_min,v4l2_focus_max;
+   int v4l2_zoom, v4l2_zoom_max,v4l2_zoom_min;
+   int v4l2_exposure_mode;
+   bool v4l2_focus_auto;
 
 #endif /* HAVE_CAMV4L2 */
 
@@ -640,6 +650,24 @@ static int autosetup_capture_mode_v4l(CvCaptureCAM_V4L* capture)
 
 #ifdef HAVE_CAMV4L2
 
+static void v4l2_scan_controls_enumerate_menu(CvCaptureCAM_V4L* capture)
+{
+//  printf (" Menu items:\n");
+  CLEAR (capture->querymenu);
+  capture->querymenu.id = capture->queryctrl.id;
+  for (capture->querymenu.index = capture->queryctrl.minimum;
+       (int)capture->querymenu.index <= capture->queryctrl.maximum;
+       capture->querymenu.index++)
+  {
+    if (0 == ioctl (capture->deviceHandle, VIDIOC_QUERYMENU,
+                     &capture->querymenu))
+    {
+//      printf (" %s\n", capture->querymenu.name);
+    } else {
+        perror ("VIDIOC_QUERYMENU");
+    }
+  }
+}
 
 static void v4l2_scan_controls(CvCaptureCAM_V4L* capture)
 {
@@ -697,13 +725,9 @@ static void v4l2_scan_controls(CvCaptureCAM_V4L* capture)
         capture->v4l2_gain_max = capture->queryctrl.maximum;
       }
 
-      if (capture->queryctrl.id == V4L2_CID_EXPOSURE)
-      {
-        capture->v4l2_exposure = 1;
-        capture->v4l2_exposure_min = capture->queryctrl.minimum;
-        capture->v4l2_exposure_max = capture->queryctrl.maximum;
-      }
 
+      if (capture->queryctrl.type == V4L2_CTRL_TYPE_MENU)
+        v4l2_scan_controls_enumerate_menu(capture);
 
     } else {
 
@@ -716,7 +740,7 @@ static void v4l2_scan_controls(CvCaptureCAM_V4L* capture)
 
   }
 
-  for (ctrl_id = V4L2_CID_PRIVATE_BASE;;ctrl_id++)
+  for (ctrl_id = V4L2_CID_BASE;ctrl_id < V4L2_CID_LASTP1 ;ctrl_id++)
   {
 
     /* set the id we will query now */
@@ -765,21 +789,61 @@ static void v4l2_scan_controls(CvCaptureCAM_V4L* capture)
         capture->v4l2_gain_max = capture->queryctrl.maximum;
       }
 
-      if (capture->queryctrl.id == V4L2_CID_EXPOSURE)
+      if (capture->queryctrl.type == V4L2_CTRL_TYPE_MENU)
+        v4l2_scan_controls_enumerate_menu(capture);
+
+    } else {
+
+      if (errno == EINVAL)
+        continue;
+
+      perror ("VIDIOC_QUERYCTRL");
+
+    }
+
+  }
+
+  //for camara class controll ids
+  /* set the id we will query now */
+  for (ctrl_id = V4L2_CID_CAMERA_CLASS_BASE;ctrl_id <= V4L2_CID_AUTO_FOCUS_RANGE;ctrl_id++)
+  {
+    CLEAR (capture->queryctrl);
+    capture->queryctrl.id = ctrl_id;
+
+    if (0 == ioctl (capture->deviceHandle, VIDIOC_QUERYCTRL,
+                   &capture->queryctrl))
+    {
+
+      if (capture->queryctrl.flags & V4L2_CTRL_FLAG_DISABLED)
+        continue;
+
+      if (capture->queryctrl.id == V4L2_CID_FOCUS_ABSOLUTE)
+      {
+        capture->v4l2_focus = 1;
+        capture->v4l2_focus_min = capture->queryctrl.minimum;
+        capture->v4l2_focus_max = capture->queryctrl.maximum;
+      }
+
+      if (capture->queryctrl.id == V4L2_CID_EXPOSURE_ABSOLUTE)
       {
         capture->v4l2_exposure = 1;
         capture->v4l2_exposure_min = capture->queryctrl.minimum;
         capture->v4l2_exposure_max = capture->queryctrl.maximum;
       }
-
+      if (capture->queryctrl.id == V4L2_CID_ZOOM_ABSOLUTE)
+      {
+        capture->v4l2_zoom = 1;
+        capture->v4l2_zoom_min = capture->queryctrl.minimum;
+        capture->v4l2_zoom_max = capture->queryctrl.maximum;
+      }
     } else {
 
-      if (errno == EINVAL)
-        break;
+    if (errno == EINVAL)
+      continue;
 
-      perror ("VIDIOC_QUERYCTRL");
+    perror ("VIDIOC_QUERYCTRL");
 
-    }
+  }
 
   }
 
@@ -1246,7 +1310,9 @@ static void mainloop_v4l2(CvCaptureCAM_V4L* capture) {
                 fprintf (stderr, "select timeout\n");
 
                 /* end the infinite loop */
+
                 break;
+
             }
 
             if (read_frame_v4l2 (capture))
@@ -2295,6 +2361,22 @@ static double icvGetPropertyCAM_V4L (CvCaptureCAM_V4L* capture,
       case CV_CAP_PROP_FRAME_HEIGHT:
           return capture->form.fmt.pix.height;
       }
+      //get frame rate
+      if (property_id == CV_CAP_PROP_FPS)
+      {
+           CLEAR(capture->stream);
+           capture->stream.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+           //int rett = ioctl (capture->deviceHandle, VIDIOC_G_PARM,
+                             //&capture->stream);
+           if (-1 == ioctl (capture->deviceHandle, VIDIOC_G_PARM,
+                                    &capture->stream)) {
+               fprintf(stderr,
+                       "HIGHGUI ERROR: V4L2: getting property #%d is not supported\n",
+                       property_id);
+               return -1;
+           }
+           return capture->stream.parm.capture.timeperframe.denominator;
+      }
 
       /* initialize the control structure */
 
@@ -2322,7 +2404,19 @@ static double icvGetPropertyCAM_V4L (CvCaptureCAM_V4L* capture,
           capture->control.id = V4L2_CID_GAIN;
           break;
       case CV_CAP_PROP_EXPOSURE:
-          capture->control.id = V4L2_CID_EXPOSURE;
+          capture->control.id = V4L2_CID_EXPOSURE_ABSOLUTE;
+          break;
+      case CV_CAP_PROP_FOCUS:
+          capture->control.id = V4L2_CID_FOCUS_ABSOLUTE;
+          break;
+      case CV_CAP_PROP_ZOOM:
+          capture->control.id = V4L2_CID_ZOOM_ABSOLUTE;
+          break;
+      case CV_CAP_PROP_EXPOSURE_AUTO:
+          capture->control.id = V4L2_CID_EXPOSURE_AUTO;
+          break;
+      case CV_CAP_PROP_FOCUS_AUTO:
+          capture->control.id = V4L2_CID_FOCUS_AUTO;
           break;
       default:
         fprintf(stderr,
@@ -2354,11 +2448,29 @@ static double icvGetPropertyCAM_V4L (CvCaptureCAM_V4L* capture,
           case CV_CAP_PROP_EXPOSURE:
               fprintf (stderr, "Exposure");
               break;
+          case CV_CAP_PROP_ZOOM:
+              fprintf (stderr, "Zoom");
+              break;
+          case CV_CAP_PROP_FOCUS:
+              fprintf (stderr, "Focus");
+              break;
           }
+
           fprintf (stderr, " is not supported by your device\n");
 
           return -1;
       }
+          //this is for added property ids (exposure_auto and focus_auto)
+          switch (property_id){
+          case CV_CAP_PROP_EXPOSURE_AUTO:
+              //refer v4l2 docs for proper meanings of these values
+              return capture->control.value;
+              break;
+          case CV_CAP_PROP_FOCUS_AUTO:
+              //0 - manual, 1 - auto
+              return capture->control.value;
+              break;
+          }
 
       /* get the min/max values */
       switch (property_id) {
@@ -2386,6 +2498,14 @@ static double icvGetPropertyCAM_V4L (CvCaptureCAM_V4L* capture,
       case CV_CAP_PROP_EXPOSURE:
           v4l2_min = capture->v4l2_exposure_min;
           v4l2_max = capture->v4l2_exposure_max;
+          break;
+      case CV_CAP_PROP_ZOOM:
+          v4l2_min = capture->v4l2_zoom_min;
+          v4l2_max = capture->v4l2_zoom_max;
+          break;
+      case CV_CAP_PROP_FOCUS:
+          v4l2_min = capture->v4l2_focus_min;
+          v4l2_max = capture->v4l2_focus_max;
           break;
       }
 
@@ -2589,7 +2709,7 @@ static int icvSetControl (CvCaptureCAM_V4L* capture,
     CLEAR (capture->control);
 
     /* set which control we want to set */
-    switch (property_id) {
+    /*switch (property_id) {
 
     case CV_CAP_PROP_BRIGHTNESS:
         capture->control.id = V4L2_CID_BRIGHTNESS;
@@ -2609,19 +2729,25 @@ static int icvSetControl (CvCaptureCAM_V4L* capture,
     case CV_CAP_PROP_EXPOSURE:
         capture->control.id = V4L2_CID_EXPOSURE;
         break;
+    case CV_CAP_PROP_FOCUS:
+        capture->queryctrl.id = V4L2_CID_FOCUS_ABSOLUTE;
+        break;
+    case CV_CAP_PROP_FOCUS_AUTO:
+        capture->queryctrl.id = V4L2_CID_FOCUS_AUTO;
+        break;
     default:
         fprintf(stderr,
                 "HIGHGUI ERROR: V4L2: setting property #%d is not supported\n",
                 property_id);
         return -1;
-    }
+    }*/
 
     /* get the min and max values */
-    if (-1 == ioctl (capture->deviceHandle,
+    /*if (-1 == ioctl (capture->deviceHandle,
                       VIDIOC_G_CTRL, &capture->control)) {
-//          perror ("VIDIOC_G_CTRL for getting min/max values");
+          fprintf (stderr,"VIDIOC_G_CTRL for getting min/max values");
           return -1;
-    }
+    }*/
 
     /* get the min/max values */
     switch (property_id) {
@@ -2650,6 +2776,14 @@ static int icvSetControl (CvCaptureCAM_V4L* capture,
         v4l2_min = capture->v4l2_exposure_min;
         v4l2_max = capture->v4l2_exposure_max;
         break;
+    case CV_CAP_PROP_FOCUS:
+        v4l2_min = capture->v4l2_focus_min;
+        v4l2_max = capture->v4l2_focus_max;
+        break;
+    case CV_CAP_PROP_ZOOM:
+        v4l2_min = capture->v4l2_zoom_min;
+        v4l2_max = capture->v4l2_zoom_max;
+        break;
     }
 
     /* initialisations */
@@ -2674,7 +2808,19 @@ static int icvSetControl (CvCaptureCAM_V4L* capture,
         capture->control.id = V4L2_CID_GAIN;
         break;
     case CV_CAP_PROP_EXPOSURE:
-        capture->control.id = V4L2_CID_EXPOSURE;
+        capture->control.id = V4L2_CID_EXPOSURE_ABSOLUTE;
+        break;
+    case CV_CAP_PROP_FOCUS:
+        capture->control.id = V4L2_CID_FOCUS_ABSOLUTE;
+        break;
+    case CV_CAP_PROP_FOCUS_AUTO:
+        capture->control.id = V4L2_CID_FOCUS_AUTO;
+        break;
+    case CV_CAP_PROP_EXPOSURE_AUTO:
+        capture->control.id = V4L2_CID_EXPOSURE_AUTO;
+        break;
+    case CV_CAP_PROP_ZOOM:
+        capture->control.id = V4L2_CID_ZOOM_ABSOLUTE;
         break;
     default:
         fprintf(stderr,
@@ -2684,12 +2830,28 @@ static int icvSetControl (CvCaptureCAM_V4L* capture,
     }
 
     /* set the value we want to set to the scaled the value */
-    capture->control.value = (int)(value * (v4l2_max - v4l2_min) + v4l2_min);
+    //capture->control.value = (int)(value * (v4l2_max - v4l2_min) + v4l2_min);
+    if (property_id == CV_CAP_PROP_FOCUS_AUTO)
+    {
+        //value should be either 0 or 1. otherwise driver will complain
+        capture->control.value = value;
+    }
+    else if (property_id == CV_CAP_PROP_EXPOSURE_AUTO)
+    {
+        //value should be 0,1,2 or 3. pls refer v4l2 docs for exact meanings
+        capture->control.value = value;
+    }
+    else if ((v4l2_max == 0) && (v4l2_min == 0))
+        capture->control.value = (int)value;
+    else
+        capture->control.value = (int)(value * (v4l2_max - v4l2_min) + v4l2_min);
+
 
     /* The driver may clamp the value or return ERANGE, ignored here */
     if (-1 == ioctl (capture->deviceHandle,
                       VIDIOC_S_CTRL, &capture->control) && errno != ERANGE) {
         perror ("VIDIOC_S_CTRL");
+        fprintf(stderr,"error setting user values \n");
         return -1;
     }
   }
@@ -2764,6 +2926,7 @@ static int icvSetPropertyCAM_V4L( CvCaptureCAM_V4L* capture,
     switch (property_id) {
     case CV_CAP_PROP_FRAME_WIDTH:
         width = cvRound(value);
+        height = cvRound(width*9.0f/16.0f);
         if(width !=0 && height != 0) {
             retval = icvSetVideoSize( capture, width, height);
             width = height = 0;
@@ -2771,6 +2934,7 @@ static int icvSetPropertyCAM_V4L( CvCaptureCAM_V4L* capture,
         break;
     case CV_CAP_PROP_FRAME_HEIGHT:
         height = cvRound(value);
+        width = cvRound(height*16.0f/9.0f);
         if(width !=0 && height != 0) {
             retval = icvSetVideoSize( capture, width, height);
             width = height = 0;
@@ -2783,6 +2947,18 @@ static int icvSetPropertyCAM_V4L( CvCaptureCAM_V4L* capture,
     case CV_CAP_PROP_GAIN:
     case CV_CAP_PROP_EXPOSURE:
         retval = icvSetControl(capture, property_id, value);
+        break;
+    case CV_CAP_PROP_EXPOSURE_AUTO:
+        retval = icvSetControl(capture, property_id, value);
+        break;
+    case CV_CAP_PROP_FOCUS_AUTO:
+        retval = icvSetControl(capture, property_id,value);
+        break;
+    case CV_CAP_PROP_FOCUS:
+        retval = icvSetControl(capture,property_id,value);
+        break;
+    case CV_CAP_PROP_ZOOM:
+        retval = icvSetControl(capture,property_id,value);
         break;
     default:
         fprintf(stderr,

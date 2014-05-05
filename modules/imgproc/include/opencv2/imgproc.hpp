@@ -1517,6 +1517,12 @@ CV_EXPORTS Ptr<GeneralizedHoughGuil> createGeneralizedHoughGuil();
 //! Performs linear blending of two images
 CV_EXPORTS void blendLinear(InputArray src1, InputArray src2, InputArray weights1, InputArray weights2, OutputArray dst);
 
+//! Performs morphological thinning of a binary image according to Lam, L., Seong-Whan Lee,
+//! and Ching Y. Suen, "Thinning Methodologies-A Comprehensive Survey," IEEE Transactions
+//! on Pattern Analysis and Machine Intelligence, Vol 14, No. 9, September 1992, page 879,
+//! bottom of first column through top of second column.
+CV_EXPORTS_W void thin(Mat &input, Mat &output, int itr = -1);
+
 } // cv
 
 #endif
