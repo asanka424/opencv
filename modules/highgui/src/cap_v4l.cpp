@@ -246,8 +246,8 @@ make & enjoy!
 #endif
 
 /* Defaults - If your board can do better, set it here.  Set for the most common type inputs. */
-#define DEFAULT_V4L_WIDTH  1280
-#define DEFAULT_V4L_HEIGHT 720
+#define DEFAULT_V4L_WIDTH  640
+#define DEFAULT_V4L_HEIGHT 480
 
 #define CHANNEL_NUMBER 1
 #define MAX_CAMERAS 8
